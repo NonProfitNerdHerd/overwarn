@@ -3,7 +3,7 @@ import React, { Suspense } from "react";
 import { Geist } from "next/font/google";
 import { Menu } from "lucide-react";
 import AppMenu from "../components/menu/AppMenu";
-import AlertOverlayLayoutDefault from "../components/themes/default/LayoutDefault";
+import OverlayLayout from "../components/themes/OverlayLayout";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,18 +26,18 @@ function LoadingOverlay() {
 export default function LiveAlertOverlay() {
   return (
     <div className="group min-h-screen w-full fixed inset-0">
-      <div className="fixed top-4 left-4 z-50">
+      <div className="fixed top-4 left-4 z-[100]">
         <AppMenu>
           <button
             aria-label="Open menu"
-            className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100 transition-opacity duration-300 bg-black/50 p-1 rounded-md"
+            className="opacity-100 data-[state=open]:opacity-100 bg-black/70 hover:bg-black/90 p-1 rounded-md border border-white/20 shadow-lg"
           >
             <Menu className="w-8 h-8 text-white" />
           </button>
         </AppMenu>
       </div>
       <Suspense fallback={<LoadingOverlay />}>
-        <AlertOverlayLayoutDefault />
+        <OverlayLayout />
       </Suspense>
     </div>
   );

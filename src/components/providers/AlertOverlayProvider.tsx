@@ -16,6 +16,20 @@ import { useSearchParams } from "next/navigation";
 import React, { createContext, useContext } from "react";
 import { flushSync } from "react-dom";
 
+const NEW_ALERT_SOUNDS: Record<string, string> = {
+  TOR: "/announce-tor.mp3",
+  SVR: "/announce-svr.mp3",
+  TOA: "/announce-toa.mp3",
+};
+
+const BASE_DISPLAY_MS = 20000;
+const NEW_ALERT_EXTRA_MS = 10000;
+
+export type RegionSummaryCounts = {
+  tornado: number;
+  severe: number;
+};
+
 export type AlertDisplay = {
   id: string;
   label: string;
@@ -23,6 +37,7 @@ export type AlertDisplay = {
   headline: string;
   area: string;
   expires: string;
+  description: string;
   geocode: NWSAlertProperties["geocode"];
   parameters: NWSAlertProperties["parameters"];
   isPDS?: boolean;
@@ -43,7 +58,7 @@ export function useAlertOverlay() {
   const [startScroll, setStartScroll] = useState(false);
   const [scrollDuration, setScrollDuration] = useState(0);
   const [bufferTime] = useState(2000); // ms
-  const [displayDuration, setDisplayDuration] = useState(10000); // ms
+  const [displayDuration, setDisplayDuration] = useState(BASE_DISPLAY_MS); // ms
   const transitionTimeout = useRef<NodeJS.Timeout | null>(null);
   const lastAlertKey = useRef<string | null>(null);
   const alertsLengthRef = useRef<number>(0);
@@ -54,6 +69,8 @@ export function useAlertOverlay() {
   const [alertTypeCounts, setAlertTypeCounts] = useState<{
     [key: string]: number;
   }>({});
+  const [filteredRegionCounts, setFilteredRegionCounts] =
+    useState<RegionSummaryCounts>({ tornado: 0, severe: 0 });
   const newAlertsRef = useRef<Set<string>>(new Set());
   const currentPositionRef = useRef(0);
 
@@ -103,13 +120,29 @@ export function useAlertOverlay() {
           const wfo = searchParams.get("wfo") || undefined;
           const type = searchParams.get("type") || undefined;
           const zone = searchParams.get("zone") || undefined;
+          const location = searchParams.get("location") || undefined;
+          const lat = searchParams.get("lat") || undefined;
+          const lon = searchParams.get("lon") || undefined;
+          const radius = searchParams.get("radius") || undefined;
           const filteredAlerts = applyQueryFilters(parsedAlerts, {
+            location,
             state,
             wfo,
             type,
             zone,
+            lat,
+            lon,
+            radius,
           });
           setAlerts(filteredAlerts);
+          setFilteredRegionCounts({
+            tornado:
+              (filteredAlerts.TOR?.length ?? 0) +
+              (filteredAlerts.TOA?.length ?? 0),
+            severe:
+              (filteredAlerts.SVR?.length ?? 0) +
+              (filteredAlerts.SVA?.length ?? 0),
+          });
         }
       } catch (error) {
         console.error("Failed to fetch alerts:", error);
@@ -159,6 +192,7 @@ export function useAlertOverlay() {
           headline: a.headline,
           area: a.areaDesc,
           expires: a.ends,
+          description: a.description,
           geocode: a.geocode,
           parameters: a.parameters,
           isPDS: a.isPDS,
@@ -252,30 +286,28 @@ export function useAlertOverlay() {
     ? newAlertsRef.current.has(alertKey)
     : false;
 
-  // When scrollInfo changes, recalculate durations
+  // Scroll speed for ticker only; alert cycle time is always fixed (BASE_DISPLAY_MS)
   useEffect(() => {
     const minReadingSpeed = 80; // px/sec
     let scrollDur = 0;
-    let totalDisplay = 10000;
     if (scrollInfo.needsScroll && scrollInfo.scrollDistance > 0) {
       scrollDur = (scrollInfo.scrollDistance / minReadingSpeed) * 1000;
-      totalDisplay = scrollDur + bufferTime * 2;
-    } else {
-      totalDisplay = 10000; // 10s for short lists
-      scrollDur = 0;
     }
     setScrollDuration(scrollDur);
-    setDisplayDuration(totalDisplay);
-  }, [scrollInfo, bufferTime]);
+    setDisplayDuration(BASE_DISPLAY_MS);
+  }, [scrollInfo]);
 
   // Play sound for new alerts
   useEffect(() => {
     if (!isCurrentAlertNew || !currentAlert) return;
     const passive = isPassiveMode(searchParams);
     if (!passive) {
+      const soundPath =
+        NEW_ALERT_SOUNDS[currentAlert.alertType] ?? "/alert-default.mp3";
       if (!audioRef.current) {
-        audioRef.current = new window.Audio("/alert-default.mp3");
+        audioRef.current = new window.Audio();
       }
+      audioRef.current.src = soundPath;
       audioRef.current.currentTime = 0;
       audioRef.current.play().catch(() => {});
     }
@@ -298,7 +330,9 @@ export function useAlertOverlay() {
       setStartScroll(true);
     }, 50); // 50ms delay to allow DOM update
 
-    // Advance to next alert after displayDuration
+    // Fixed cycle: 20s per alert, 25s for newly issued
+    const cycleDuration =
+      BASE_DISPLAY_MS + (isCurrentAlertNew ? NEW_ALERT_EXTRA_MS : 0);
     const interval = setTimeout(() => {
       // Only transition if we're still showing the same alert
       // This prevents race conditions when the queue changes
@@ -324,7 +358,7 @@ export function useAlertOverlay() {
           }
         }, 300);
       }
-    }, displayDuration);
+    }, cycleDuration);
 
     return () => {
       clearTimeout(scrollStart);
@@ -332,7 +366,7 @@ export function useAlertOverlay() {
       if (transitionTimeout.current) clearTimeout(transitionTimeout.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alertKey, displayDuration]);
+  }, [alertKey, isCurrentAlertNew]);
 
   // Reset transition state when currentIdx changes
   useEffect(() => {
@@ -389,6 +423,7 @@ export function useAlertOverlay() {
     displayDuration,
     mergedAlertTypes,
     alertTypeCounts,
+    filteredRegionCounts,
   };
 }
 
@@ -413,6 +448,7 @@ export const AlertOverlayProvider = ({
     displayDuration,
     mergedAlertTypes,
     alertTypeCounts,
+    filteredRegionCounts,
   } = useAlertOverlay();
 
   const value = useMemo(
@@ -428,6 +464,7 @@ export const AlertOverlayProvider = ({
       displayDuration,
       mergedAlertTypes,
       alertTypeCounts,
+      filteredRegionCounts,
     }),
     [
       alert,
@@ -441,6 +478,7 @@ export const AlertOverlayProvider = ({
       displayDuration,
       mergedAlertTypes,
       alertTypeCounts,
+      filteredRegionCounts,
     ]
   );
   return (

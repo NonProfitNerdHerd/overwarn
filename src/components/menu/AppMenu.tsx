@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, Suspense, useEffect } from "react";
+import React, { useState, Suspense, useEffect, useRef } from "react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -13,6 +13,8 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuSubContent,
   DropdownMenuCheckboxItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
 } from "../ui/dropdown-menu";
 import {
   Tooltip,
@@ -20,7 +22,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "../ui/tooltip";
-import { Menu, Search, Clipboard, Check, Bug, Code, MoreHorizontal, Info } from "lucide-react";
+import { Menu, Search, Clipboard, Check, Bug, Code, MoreHorizontal, Info, MapPin } from "lucide-react";
 import { US_STATES } from "@/types/states";
 import { ALERT_TYPES } from "@/config/alertConfig";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
@@ -28,6 +30,21 @@ import { NWSOffice, NWSOfficeNames } from "@/types/nwsOffices";
 import { SettingsDialog } from "./Settings";
 import { useAlertOverlayContext } from "../providers/AlertOverlayProvider";
 import { AboutDialog } from "./About";
+import {
+  RADIUS_MILES_OPTIONS,
+  parseLocationMode,
+  parseRadiusMiles,
+  parseLatLonParams,
+} from "@/utils/queryParamUtils";
+import { geocodeZip, getBrowserLocation } from "@/utils/geocodeUtils";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
+import { Button } from "../ui/button";
 
 function formatQueryParams(params: URLSearchParams): string {
   const formattedParams = new URLSearchParams();
@@ -103,6 +120,92 @@ function AppMenuInner({ children, setAboutOpen }: { children?: React.ReactNode, 
 
   const [showNewCircle, setShowNewCircle] = useState(true);
 
+  const locationMode = parseLocationMode(searchParams.get("location"));
+  const radiusMiles = parseRadiusMiles(searchParams.get("radius"));
+  const center = parseLatLonParams({
+    lat: searchParams.get("lat"),
+    lon: searchParams.get("lon"),
+  });
+  const [zipInput, setZipInput] = useState(searchParams.get("zip") || "");
+  const [zipError, setZipError] = useState("");
+  const [geoStatus, setGeoStatus] = useState<"idle" | "loading" | "denied">("idle");
+  const geolocationAttempted = useRef(false);
+
+  useEffect(() => {
+    setZipInput(searchParams.get("zip") || "");
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (locationMode !== "radius" || center || geolocationAttempted.current) return;
+    geolocationAttempted.current = true;
+    setGeoStatus("loading");
+    getBrowserLocation()
+      .then(({ lat, lon }) => {
+        const params = new URLSearchParams(searchParams.toString());
+        params.set("location", "radius");
+        if (!params.get("radius")) params.set("radius", "50");
+        params.set("lat", lat.toFixed(4));
+        params.set("lon", lon.toFixed(4));
+        params.delete("state");
+        router.replace(`${pathname}?${params.toString()}`);
+        setGeoStatus("idle");
+      })
+      .catch(() => setGeoStatus("denied"));
+  }, [locationMode, center, searchParams, router, pathname]);
+
+  const replaceSearchParams = (params: URLSearchParams) => {
+    router.replace(`${pathname}${params.toString() ? `?${params.toString()}` : ""}`);
+  };
+
+  const setLocationMode = (mode: "state" | "radius") => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (mode === "radius") {
+      params.set("location", "radius");
+      if (!params.get("radius")) params.set("radius", "50");
+      params.delete("state");
+      geolocationAttempted.current = false;
+    } else {
+      params.delete("location");
+      params.delete("lat");
+      params.delete("lon");
+      params.delete("radius");
+      params.delete("zip");
+      geolocationAttempted.current = false;
+    }
+    replaceSearchParams(params);
+  };
+
+  const setRadiusMiles = (miles: number) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("location", "radius");
+    params.set("radius", String(miles));
+    replaceSearchParams(params);
+  };
+
+  const setRadiusCenter = (lat: number, lon: number, zip?: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("location", "radius");
+    if (!params.get("radius")) params.set("radius", "50");
+    params.set("lat", lat.toFixed(4));
+    params.set("lon", lon.toFixed(4));
+    params.delete("state");
+    if (zip) params.set("zip", zip);
+    else params.delete("zip");
+    replaceSearchParams(params);
+  };
+
+  const handleZipApply = async () => {
+    setZipError("");
+    const coords = await geocodeZip(zipInput);
+    if (!coords) {
+      setZipError("Enter a valid US zip code");
+      return;
+    }
+    const cleanedZip = zipInput.trim().replace(/\D/g, "").slice(0, 5);
+    setRadiusCenter(coords.lat, coords.lon, cleanedZip);
+    setGeoStatus("idle");
+  };
+
   const updateURL = (newStates: string[], newOffices: string[]) => {
     const params = new URLSearchParams(searchParams.toString());
     const otherParams = Array.from(params.entries())
@@ -145,6 +248,18 @@ function AppMenuInner({ children, setAboutOpen }: { children?: React.ReactNode, 
       return state ? state.name : "All States/Territories";
     }
     return `${selectedStates.length} states/territories selected`;
+  };
+
+  const getLocationFilterLabel = () => {
+    if (locationMode === "radius") {
+      if (center) {
+        return `${radiusMiles} mi radius`;
+      }
+      if (geoStatus === "loading") return "Detecting location...";
+      if (geoStatus === "denied") return "Radius (enter zip code)";
+      return "Radius";
+    }
+    return getSelectedStatesLabel();
   };
 
   const filteredStates = stateSearch.trim() === ""
@@ -329,71 +444,166 @@ function AppMenuInner({ children, setAboutOpen }: { children?: React.ReactNode, 
           <DropdownMenuSub>
             <DropdownMenuSubTrigger className="w-full">
               <div className="flex flex-col items-start">
-                <span className="font-medium">Filter by State</span>
-                <span className="text-sm text-muted-foreground">{getSelectedStatesLabel()}</span>
+                <span className="font-medium">Location Filter</span>
+                <span className="text-sm text-muted-foreground">{getLocationFilterLabel()}</span>
               </div>
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="max-h-[400px] overflow-y-auto">
-              <div className="px-2 py-1.5 sticky top-0 bg-popover z-10 border-b">
-                <div className="flex items-center px-2 bg-muted rounded-md">
-                  <Search className="h-3.5 w-3.5 text-muted-foreground mr-2" />
-                  <input
-                    type="text"
-                    placeholder="Search states/territories..."
-                    className="flex h-9 w-full rounded-md bg-transparent py-1 text-sm outline-none placeholder:text-muted-foreground"
-                    value={stateSearch}
-                    onChange={(e) => handleSearchChange(e, setStateSearch)}
-                    onKeyDown={handleSearchKeyDown}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                </div>
-              </div>
-              <DropdownMenuItem 
-                className="font-medium mt-1" 
-                onSelect={(e) => {
-                  e.preventDefault();
-                  handleAllStates();
-                }}
+            <DropdownMenuSubContent className="w-[280px]">
+              <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
+                Filter alerts by state or distance from a point (US only)
+              </DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={locationMode}
+                onValueChange={(value) => setLocationMode(value as "state" | "radius")}
               >
-                All States/Territories
-              </DropdownMenuItem>
-              {/* Contiguous US option */}
-              <DropdownMenuCheckboxItem
-                className="font-medium"
-                checked={selectedStates.length === 1 && selectedStates[0] === "CONT"}
-                onCheckedChange={(checked) => {
-                  if (checked) {
-                    // Set only 'cont' as the state param
-                    updateURL(["CONT"], selectedOffices);
-                  } else {
-                    // Deselect 'cont', show all states
-                    updateURL([], selectedOffices);
-                  }
-                }}
-                onSelect={e => e.preventDefault()}
-              >
-                Lower 48 States
-              </DropdownMenuCheckboxItem>
+                <DropdownMenuRadioItem value="state" onSelect={(e) => e.preventDefault()}>
+                  Filter by State
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="radius" onSelect={(e) => e.preventDefault()}>
+                  Filter by Radius
+                </DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
               <DropdownMenuSeparator />
-              {filteredStates.length === 0 ? (
-                <div className="px-2 py-4 text-center text-sm text-muted-foreground">
-                  No states found
-                </div>
+              {locationMode === "state" ? (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger className="w-full">
+                    <span className="font-medium">Select States</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="max-h-[400px] overflow-y-auto">
+                    <div className="px-2 py-1.5 sticky top-0 bg-popover z-10 border-b">
+                      <div className="flex items-center px-2 bg-muted rounded-md">
+                        <Search className="h-3.5 w-3.5 text-muted-foreground mr-2" />
+                        <input
+                          type="text"
+                          placeholder="Search states/territories..."
+                          className="flex h-9 w-full rounded-md bg-transparent py-1 text-sm outline-none placeholder:text-muted-foreground"
+                          value={stateSearch}
+                          onChange={(e) => handleSearchChange(e, setStateSearch)}
+                          onKeyDown={handleSearchKeyDown}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                    </div>
+                    <DropdownMenuItem
+                      className="font-medium mt-1"
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        handleAllStates();
+                      }}
+                    >
+                      All States/Territories
+                    </DropdownMenuItem>
+                    <DropdownMenuCheckboxItem
+                      className="font-medium"
+                      checked={selectedStates.length === 1 && selectedStates[0] === "CONT"}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          updateURL(["CONT"], selectedOffices);
+                        } else {
+                          updateURL([], selectedOffices);
+                        }
+                      }}
+                      onSelect={(e) => e.preventDefault()}
+                    >
+                      Lower 48 States
+                    </DropdownMenuCheckboxItem>
+                    <DropdownMenuSeparator />
+                    {filteredStates.length === 0 ? (
+                      <div className="px-2 py-4 text-center text-sm text-muted-foreground">
+                        No states found
+                      </div>
+                    ) : (
+                      filteredStates.map((state) => (
+                        <DropdownMenuCheckboxItem
+                          key={state.code}
+                          checked={selectedStates.includes(state.code.toUpperCase())}
+                          onCheckedChange={(checked) => handleStateSelect(state.code, checked)}
+                          onSelect={(e) => e.preventDefault()}
+                          className="flex items-center justify-between"
+                        >
+                          <span>{state.name}</span>
+                          <span className="ml-2 bg-primary/10 text-primary text-xs font-semibold px-2 py-0.5 rounded-full min-w-[2.5em] text-center">
+                            {state.code}
+                          </span>
+                        </DropdownMenuCheckboxItem>
+                      ))
+                    )}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
               ) : (
-                filteredStates.map(state => (
-                  <DropdownMenuCheckboxItem
-                    key={state.code}
-                    checked={selectedStates.includes(state.code.toUpperCase())}
-                    onCheckedChange={(checked) => handleStateSelect(state.code, checked)}
-                    onSelect={(e) => e.preventDefault()}
-                    className="flex items-center justify-between"
-                  >
-                    <span>{state.name}</span>
-                    <span className="ml-2 bg-primary/10 text-primary text-xs font-semibold px-2 py-0.5 rounded-full min-w-[2.5em] text-center">
-                      {state.code}
-                    </span>
-                  </DropdownMenuCheckboxItem>
-                ))
+                <div
+                  className="px-2 py-2 space-y-3"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  {center ? (
+                    <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                      <MapPin className="w-4 h-4 mt-0.5 shrink-0" />
+                      <span>
+                        Center: {center.lat.toFixed(4)}, {center.lon.toFixed(4)}
+                        {searchParams.get("zip") ? ` (${searchParams.get("zip")})` : " (browser location)"}
+                      </span>
+                    </div>
+                  ) : geoStatus === "loading" ? (
+                    <p className="text-sm text-muted-foreground">Detecting your location...</p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Location unavailable. Enter a US zip code below.
+                    </p>
+                  )}
+                  <div className="space-y-1">
+                    <label htmlFor="radius-zip" className="text-sm font-medium">
+                      Zip code
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        id="radius-zip"
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="e.g. 73102"
+                        className="flex h-9 w-full rounded-md border bg-transparent px-3 text-sm outline-none"
+                        value={zipInput}
+                        onChange={(e) => {
+                          setZipInput(e.target.value);
+                          setZipError("");
+                        }}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            handleZipApply();
+                          }
+                        }}
+                      />
+                      <Button type="button" size="sm" onClick={handleZipApply}>
+                        Set
+                      </Button>
+                    </div>
+                    {zipError && (
+                      <p className="text-xs text-destructive">{zipError}</p>
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    <label htmlFor="radius-miles" className="text-sm font-medium">
+                      Radius
+                    </label>
+                    <Select
+                      value={String(radiusMiles)}
+                      onValueChange={(value) => setRadiusMiles(parseInt(value, 10))}
+                    >
+                      <SelectTrigger id="radius-miles" className="w-full">
+                        <SelectValue placeholder="Select radius" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {RADIUS_MILES_OPTIONS.map((miles) => (
+                          <SelectItem key={miles} value={String(miles)}>
+                            {miles} miles
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
               )}
             </DropdownMenuSubContent>
           </DropdownMenuSub>

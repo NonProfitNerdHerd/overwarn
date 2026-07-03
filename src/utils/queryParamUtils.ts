@@ -1,4 +1,4 @@
-import { filterAlertsByStates, filterAlertsByOffices, NWSAlertGrouped, filterAlertsByTypes, filterAlertsByZones } from './nwsAlertUtils';
+import { filterAlertsByStates, filterAlertsByOffices, NWSAlertGrouped, filterAlertsByTypes, filterAlertsByZones, filterAlertsByRadius } from './nwsAlertUtils';
 import { US_STATES } from "@/types/states";
 
 /**
@@ -81,6 +81,43 @@ export function parseZoneParam(zoneParam: string | string[] | undefined): string
     .filter(Boolean);
 }
 
+export const RADIUS_MILES_OPTIONS = [10, 25, 50, 100, 250, 500] as const;
+export type LocationFilterMode = "state" | "radius";
+
+export function parseLocationMode(
+  locationParam: string | null | undefined
+): LocationFilterMode {
+  return locationParam === "radius" ? "radius" : "state";
+}
+
+export function parseRadiusMiles(
+  radiusParam: string | null | undefined
+): number {
+  const parsed = parseInt(radiusParam || "", 10);
+  return (RADIUS_MILES_OPTIONS as readonly number[]).includes(parsed)
+    ? parsed
+    : 50;
+}
+
+export function parseCoordinate(
+  value: string | null | undefined
+): number | null {
+  if (!value) return null;
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function parseLatLonParams(params: {
+  lat?: string | null;
+  lon?: string | null;
+}): { lat: number; lon: number } | null {
+  const lat = parseCoordinate(params.lat ?? null);
+  const lon = parseCoordinate(params.lon ?? null);
+  if (lat === null || lon === null) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
 /**
  * Parses the 'colors' query parameter into an object mapping alert type keys to hex codes.
  * @param colorsParam The 'colors' query parameter from the URL
@@ -133,17 +170,38 @@ function normalizeHex(hex: string): string {
 export function applyQueryFilters(
   alerts: NWSAlertGrouped,
   params: {
+    location?: string | null;
     state?: string | string[];
     wfo?: string | string[];
     type?: string | string[];
     zone?: string | string[];
+    lat?: string | null;
+    lon?: string | null;
+    radius?: string | null;
   }
 ): NWSAlertGrouped {
   let filteredAlerts = { ...alerts };
-  
-  // Apply state filter if present
-  if (params.state) {
-    // If 'cont' is present, only use contiguous states
+
+  const locationMode = parseLocationMode(params.location ?? null);
+
+  if (locationMode === "radius") {
+    const center = parseLatLonParams({
+      lat: params.lat ?? null,
+      lon: params.lon ?? null,
+    });
+    if (center) {
+      const radiusMiles = parseRadiusMiles(params.radius ?? null);
+      filteredAlerts = filterAlertsByRadius(
+        filteredAlerts,
+        center.lat,
+        center.lon,
+        radiusMiles
+      );
+    } else {
+      return {};
+    }
+  } else if (params.state) {
+    // Apply state filter if present
     const stateValues = Array.isArray(params.state) ? params.state : [params.state];
     if (stateValues.some(v => v.split(',').map(s => s.trim().toUpperCase()).includes("CONT"))) {
       filteredAlerts = filterAlertsByStates(filteredAlerts, getContiguousStateCodes());

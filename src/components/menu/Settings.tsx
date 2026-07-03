@@ -12,6 +12,7 @@ import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { ALERT_TYPES } from "../../config/alertConfig";
 import { TAILWIND_TO_HEX } from "../../config/alertConfig";
 import { parseColorsParam, serializeColorsParam, isPassiveMode, setPassiveMode } from "../../utils/queryParamUtils";
+import { OVERLAY_OPTIONS, parseOverlayId } from "../../config/overlayConfig";
 import { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from "../ui/accordion";
 
 const FONT_OPTIONS = [
@@ -33,6 +34,17 @@ export function SettingsDialog({ onSeenSettings, showNewBadge }: { onSeenSetting
   const zoneParam = searchParams.get("zone") || "";
   const [zoneInput, setZoneInput] = useState(zoneParam);
   const [font, setFont] = useState(FONT_OPTIONS[0].value);
+  const overlayId = parseOverlayId(searchParams.get("overlay"));
+
+  const handleOverlayChange = (value: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (value === "1") {
+      params.delete("overlay");
+    } else {
+      params.set("overlay", value);
+    }
+    router.replace(`${pathname}${params.toString() ? `?${params.toString()}` : ""}`);
+  };
 
   // --- Alert Color Customization ---
   const colorsParam = searchParams.get("colors") || undefined;
@@ -198,6 +210,26 @@ export function SettingsDialog({ onSeenSettings, showNewBadge }: { onSeenSetting
                 autoComplete="off"
                 ref={inputRef}
               />
+            </div>
+            <div>
+              <label htmlFor="overlay-select" className="block text-sm font-medium mb-1">
+                Overlay Layout
+              </label>
+              <Select value={overlayId} onValueChange={handleOverlayChange}>
+                <SelectTrigger id="overlay-select" className="w-full rounded-md border px-3 py-2 text-sm bg-background">
+                  <SelectValue placeholder="Select overlay" />
+                </SelectTrigger>
+                <SelectContent>
+                  {OVERLAY_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                Overlay 2 moves the state/until line into the counties bar with ticker scrolling.
+              </p>
             </div>
             <div>
               <label htmlFor="font-select" className="block text-sm font-medium mb-1">

@@ -50,10 +50,15 @@ type AlertAreaBarProps = {
     thunderstormDamageThreat?: string[];
     flashFloodDamageThreat?: string[];
   };
+  /** Prepended to area text (e.g. state/until line for Overlay 2) */
+  prefix?: string;
+  /** Loop ticker scroll when content overflows */
+  tickerLoop?: boolean;
+  backgroundColorOverride?: string;
 };
 
 const AlertAreaBar = forwardRef<HTMLDivElement, AlertAreaBarProps>(function AlertAreaBar({
-  area, geocode, isTransitioning, color, scrollDuration, bufferTime, startScroll, onMeasureScroll, alertType, parameters
+  area, geocode, isTransitioning, color, scrollDuration, bufferTime, startScroll, onMeasureScroll, alertType, parameters, prefix = "", tickerLoop = true, backgroundColorOverride,
 }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const spanRef = useRef<HTMLSpanElement>(null);
@@ -122,70 +127,105 @@ const AlertAreaBar = forwardRef<HTMLDivElement, AlertAreaBarProps>(function Aler
     return { label, scrollContent };
   }, [area, geocode, alertType, parameters]);
 
-  // Use getLightAreaBarColor for the background
-  const bgColor = useMemo(() => getLightAreaBarColor(color), [color]);
+  const displayContent = useMemo(() => {
+    const trimmedPrefix = prefix.trim();
+    if (trimmedPrefix && scrollContent) {
+      return `${trimmedPrefix} | ${scrollContent}`;
+    }
+    return trimmedPrefix || scrollContent;
+  }, [prefix, scrollContent]);
 
-  // Expose measureScroll to parent after render
-  useEffect(() => {
+  // Use getLightAreaBarColor for the background
+  const bgColor = useMemo(
+    () => backgroundColorOverride ?? getLightAreaBarColor(color),
+    [backgroundColorOverride, color]
+  );
+
+  const getScrollMetrics = () => {
     const container = containerRef.current;
     const content = spanRef.current;
-    if (!container || !content) return;
-    // Account for container horizontal padding
+    if (!container || !content) return { scrollDistance: 0, needsScroll: false };
     const style = window.getComputedStyle(container);
     const paddingLeft = parseFloat(style.paddingLeft) || 0;
     const paddingRight = parseFloat(style.paddingRight) || 0;
     const totalPadding = paddingLeft + paddingRight;
     const scrollDistance = content.scrollWidth - (container.clientWidth - totalPadding);
-    const needsScroll = content.scrollWidth > container.clientWidth;
+    const needsScroll = scrollDistance > 0;
+    return { scrollDistance, needsScroll };
+  };
+
+  // Expose measureScroll to parent after render
+  useEffect(() => {
+    const { scrollDistance, needsScroll } = getScrollMetrics();
     if (onMeasureScroll) {
       onMeasureScroll({ scrollDistance, needsScroll });
     }
-  }, [area, geocode, scrollContent, onMeasureScroll]);
+  }, [area, geocode, displayContent, onMeasureScroll]);
 
-  // Scroll animation controlled by parent
+  // Ticker scroll animation — loops when content overflows
   useEffect(() => {
     const container = containerRef.current;
     const content = spanRef.current;
     if (!container || !content) return;
-    
-    // Check if content actually changed - only reset scroll position if it did
-    const contentChanged = previousScrollContentRef.current !== scrollContent;
+
+    const contentChanged = previousScrollContentRef.current !== displayContent;
     if (contentChanged) {
       container.scrollLeft = 0;
-      previousScrollContentRef.current = scrollContent;
+      previousScrollContentRef.current = displayContent;
     }
-    
+
     let animationFrameId: number;
-    let start: number | null = null;
-    let scrollDistance = 0;
-    // Account for container horizontal padding
-    const style = window.getComputedStyle(container);
-    const paddingLeft = parseFloat(style.paddingLeft) || 0;
-    const paddingRight = parseFloat(style.paddingRight) || 0;
-    const totalPadding = paddingLeft + paddingRight;
-    scrollDistance = content.scrollWidth - (container.clientWidth - totalPadding);
-    if (!startScroll || scrollDistance <= 0) return;
-    
-    // Start scroll after bufferTime
-    const scrollStartTimeout = setTimeout(() => {
+    let cancelled = false;
+
+    type TickerPhase = "wait-start" | "scrolling" | "wait-end";
+    let phase: TickerPhase = "wait-start";
+    let phaseStart: number | null = null;
+
+    const runTicker = () => {
+      if (!startScroll) return;
+
+      const { scrollDistance, needsScroll } = getScrollMetrics();
+      if (!needsScroll) return;
+
       function step(timestamp: number) {
-        if (!container) return;
-        if (!start) start = timestamp;
-        const elapsed = timestamp - start;
-        const progress = Math.min(elapsed / scrollDuration, 1);
-        container.scrollLeft = progress * scrollDistance;
-        if (progress < 1) {
-          animationFrameId = requestAnimationFrame(step);
+        if (cancelled || !container) return;
+        if (!phaseStart) phaseStart = timestamp;
+        const elapsed = timestamp - phaseStart;
+        const metrics = getScrollMetrics();
+
+        if (phase === "wait-start") {
+          if (elapsed >= bufferTime) {
+            phase = "scrolling";
+            phaseStart = timestamp;
+          }
+        } else if (phase === "scrolling") {
+          const progress = Math.min(elapsed / scrollDuration, 1);
+          container.scrollLeft = progress * metrics.scrollDistance;
+          if (progress >= 1) {
+            phase = tickerLoop ? "wait-end" : "wait-start";
+            phaseStart = timestamp;
+          }
+        } else if (phase === "wait-end") {
+          if (elapsed >= bufferTime) {
+            container.scrollLeft = 0;
+            phase = "wait-start";
+            phaseStart = timestamp;
+          }
         }
+
+        animationFrameId = requestAnimationFrame(step);
       }
+
       animationFrameId = requestAnimationFrame(step);
-    }, bufferTime);
-    // Cleanup
+    };
+
+    runTicker();
+
     return () => {
-      clearTimeout(scrollStartTimeout);
+      cancelled = true;
       cancelAnimationFrame(animationFrameId);
     };
-  }, [area, geocode, scrollContent, startScroll, scrollDuration, bufferTime]);
+  }, [area, geocode, displayContent, startScroll, scrollDuration, bufferTime, tickerLoop]);
 
   useImperativeHandle(ref, () => containerRef.current as HTMLDivElement);
 
@@ -197,7 +237,8 @@ const AlertAreaBar = forwardRef<HTMLDivElement, AlertAreaBarProps>(function Aler
         textShadow: '1px 1px 4px rgba(0,0,0,0.7)', 
         overflowX: 'auto',
         backgroundColor: bgColor,
-        transition: 'background-color 0.3s'
+        transition: 'background-color 0.3s',
+        boxShadow: backgroundColorOverride === "transparent" ? "none" : undefined,
       }}
     >
       <span
@@ -205,7 +246,7 @@ const AlertAreaBar = forwardRef<HTMLDivElement, AlertAreaBarProps>(function Aler
         className={`transition-all duration-300 inline-block ${isTransitioning && area ? 'opacity-0 translate-y-4' : 'opacity-100 translate-y-0'}`}
         style={{ whiteSpace: 'nowrap' }}
       >
-        {scrollContent}
+        {displayContent}
       </span>
     </div>
   );

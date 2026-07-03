@@ -6,19 +6,22 @@ type AlertExpiresProps = {
   isTransitioning: boolean;
   isNew?: boolean;
   showNewBadge?: boolean;
+  backgroundColorOverride?: string;
 };
 
-export default function AlertExpires({ expires, isTransitioning, isNew, showNewBadge }: AlertExpiresProps) {
+export default function AlertExpires({ expires, isTransitioning, isNew, showNewBadge, backgroundColorOverride }: AlertExpiresProps) {
   const expiresText = expires ? getExpiresIn(expires) : "";
   const hasContent = expiresText || (isNew && showNewBadge);
+  const isTransparent = backgroundColorOverride === "transparent";
   
   return (
     <div 
       className="flex items-center px-4 py-2 text-white font-bold text-xl shadow row-span-1 col-span-1 drop-shadow-md whitespace-nowrap overflow-hidden text-ellipsis" 
       style={{ 
         textShadow: '1px 1px 4px rgba(0,0,0,0.7)',
-        backgroundColor: '#171717',
-        borderTop: '1px solid #404040'
+        backgroundColor: backgroundColorOverride ?? '#171717',
+        borderTop: isTransparent ? 'none' : '1px solid #404040',
+        boxShadow: isTransparent ? 'none' : undefined,
       }}
     >
       <span className={`flex items-center transition-all duration-300 ${

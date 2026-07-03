@@ -2,6 +2,10 @@
 import { DateTime } from "luxon";
 import { US_STATES } from "../types/states";
 
+export type AlertGeometry =
+  | { type: "Polygon"; coordinates: number[][][] }
+  | { type: "MultiPolygon"; coordinates: number[][][][] };
+
 export type NWSAlertProperties = {
   id: string;
   event: string;
@@ -9,6 +13,7 @@ export type NWSAlertProperties = {
   areaDesc: string;
   ends: string;
   description: string;
+  geometry?: AlertGeometry | null;
   geocode?: {
     UGC?: string[];
     SAME?: string[];
@@ -35,7 +40,24 @@ export type NWSAlertGrouped = {
   [key: string]: NWSAlertProperties[];
 };
 
-export function parseAlerts(features: { id: string; properties: NWSAlertProperties & { event: string; headline: string; areaDesc: string; ends: string; description: string; geocode?: { UGC?: string[]; SAME?: string[]; [key: string]: string[] | undefined; } } }[]): NWSAlertGrouped {
+type NWSAlertFeature = {
+  id: string;
+  geometry?: AlertGeometry | null;
+  properties: NWSAlertProperties & {
+    event: string;
+    headline: string;
+    areaDesc: string;
+    ends: string;
+    description: string;
+    geocode?: {
+      UGC?: string[];
+      SAME?: string[];
+      [key: string]: string[] | undefined;
+    };
+  };
+};
+
+export function parseAlerts(features: NWSAlertFeature[]): NWSAlertGrouped {
   const EVENT_TYPE_MAP: { pattern: RegExp; type: string }[] = [
     { pattern: /Tornado Warning/i, type: "TOR" },
     { pattern: /Severe Thunderstorm Warning/i, type: "SVR" },
@@ -53,7 +75,7 @@ export function parseAlerts(features: { id: string; properties: NWSAlertProperti
   ];
 
   const grouped: NWSAlertGrouped = {};
-  for (const { id, properties } of features) {
+  for (const { id, geometry, properties } of features) {
     const event = properties.event;
     let type: string | null = null;
     let isTornadoWarning = false;
@@ -85,6 +107,7 @@ export function parseAlerts(features: { id: string; properties: NWSAlertProperti
         areaDesc: properties.areaDesc,
         ends: properties.ends,
         description: properties.description,
+        geometry,
         geocode: properties.geocode,
         parameters: properties.parameters,
         isPDS,
@@ -107,6 +130,7 @@ export function parseAlerts(features: { id: string; properties: NWSAlertProperti
         areaDesc: properties.areaDesc,
         ends: properties.ends,
         description: properties.description,
+        geometry,
         geocode: properties.geocode,
         parameters: properties.parameters,
         isEmergency,
@@ -125,6 +149,7 @@ export function parseAlerts(features: { id: string; properties: NWSAlertProperti
           areaDesc: properties.areaDesc,
           ends: properties.ends,
           description: properties.description,
+          geometry,
           geocode: properties.geocode,
           parameters: properties.parameters,
           maxHailSize: properties.parameters?.maxHailSize,
@@ -139,6 +164,7 @@ export function parseAlerts(features: { id: string; properties: NWSAlertProperti
           areaDesc: properties.areaDesc,
           ends: properties.ends,
           description: properties.description,
+          geometry,
           geocode: properties.geocode,
           parameters: properties.parameters,
         };
@@ -246,6 +272,39 @@ export function formatExpiresTime(expires: string | null | undefined, headline: 
   if (!dt.isValid) return "";
   const dtZoned = dt.setZone(tz);
   return dtZoned.toFormat("EEE h:mma") + " " + dtZoned.offsetNameShort;
+}
+
+export function formatAlertDescriptionForTicker(
+  description: string | null | undefined
+): string {
+  if (!description?.trim()) return "";
+  return description
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/^\*\s*/, "").trim())
+    .filter(Boolean)
+    .join(" · ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .toUpperCase();
+}
+
+export function getStateUntilText(
+  area: string | null,
+  geocode?: { UGC?: string[] },
+  expires?: string | null,
+  headline?: string | null
+): string {
+  if (!area) return "";
+  const expiresText =
+    expires && headline ? formatExpiresTime(expires, headline) : "";
+  const states = getStates(area, geocode);
+  if (states && expiresText) {
+    return `${states} - UNTIL ${expiresText}`;
+  }
+  if (states) return states;
+  if (expiresText) return `UNTIL ${expiresText}`;
+  return "";
 }
 
 /**
@@ -389,5 +448,118 @@ export function filterAlertsByZones(alerts: NWSAlertGrouped, zones: string[]): N
       result[alertType] = filteredAlerts;
     }
   });
+  return result;
+}
+
+const EARTH_RADIUS_MILES = 3958.8;
+
+export function haversineMiles(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * EARTH_RADIUS_MILES * Math.asin(Math.sqrt(a));
+}
+
+function extractGeometryCoordinates(
+  geometry: AlertGeometry
+): { lat: number; lon: number }[] {
+  const points: { lat: number; lon: number }[] = [];
+
+  const addRing = (ring: number[][]) => {
+    for (const [lon, lat] of ring) {
+      if (typeof lat === "number" && typeof lon === "number") {
+        points.push({ lat, lon });
+      }
+    }
+  };
+
+  if (geometry.type === "Polygon") {
+    geometry.coordinates.forEach(addRing);
+  } else if (geometry.type === "MultiPolygon") {
+    geometry.coordinates.forEach((polygon) => polygon.forEach(addRing));
+  }
+
+  return points;
+}
+
+function getGeometryCentroid(geometry: AlertGeometry): { lat: number; lon: number } | null {
+  const points = extractGeometryCoordinates(geometry);
+  if (!points.length) return null;
+  const totals = points.reduce(
+    (acc, point) => ({ lat: acc.lat + point.lat, lon: acc.lon + point.lon }),
+    { lat: 0, lon: 0 }
+  );
+  return {
+    lat: totals.lat / points.length,
+    lon: totals.lon / points.length,
+  };
+}
+
+export function isUSAlert(alert: NWSAlertProperties): boolean {
+  const ugcCodes = alert.geocode?.UGC || [];
+  if (ugcCodes.length > 0) {
+    return ugcCodes.some((code) => STATE_MAP[code.substring(0, 2)]);
+  }
+
+  const areaMatches = alert.areaDesc.match(/,\s*([A-Z]{2})/g) || [];
+  const areaAbbrs = areaMatches.map((match) => match.replace(/,\s*/, ""));
+  return areaAbbrs.some((abbr) => STATE_MAP[abbr]);
+}
+
+export function alertIntersectsRadius(
+  alert: NWSAlertProperties,
+  centerLat: number,
+  centerLon: number,
+  radiusMiles: number
+): boolean {
+  if (!alert.geometry) return false;
+
+  const points = extractGeometryCoordinates(alert.geometry);
+  for (const point of points) {
+    if (
+      haversineMiles(centerLat, centerLon, point.lat, point.lon) <= radiusMiles
+    ) {
+      return true;
+    }
+  }
+
+  const centroid = getGeometryCentroid(alert.geometry);
+  if (!centroid) return false;
+  return (
+    haversineMiles(centerLat, centerLon, centroid.lat, centroid.lon) <=
+    radiusMiles
+  );
+}
+
+/**
+ * Filter alerts within a radius of a center point (US alerts only).
+ */
+export function filterAlertsByRadius(
+  alerts: NWSAlertGrouped,
+  centerLat: number,
+  centerLon: number,
+  radiusMiles: number
+): NWSAlertGrouped {
+  const result: NWSAlertGrouped = {};
+
+  Object.entries(alerts).forEach(([alertType, alertsList]) => {
+    const filteredAlerts = alertsList.filter(
+      (alert) =>
+        isUSAlert(alert) &&
+        alertIntersectsRadius(alert, centerLat, centerLon, radiusMiles)
+    );
+    if (filteredAlerts.length > 0) {
+      result[alertType] = filteredAlerts;
+    }
+  });
+
   return result;
 }
